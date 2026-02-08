@@ -3,25 +3,36 @@ import express from "express";
 import multer from "multer";
 import cors from "cors";
 import sharp from "sharp";
-import { performance } from "perf_hooks";
 
 const app = express();
 const upload = multer();
 
-app.use(cors());
+app.use(
+  cors({
+    origin: "*", // later you can lock this to your github.io URL
+    methods: ["GET", "POST"],
+  }),
+);
 
-let imgBufferArray = [];
 let zoneXBounds, quesSeqStyle;
-
+let questionRegex = [];
+let imgBufferArray = [];
+let banWord = [];
 function resetSession() {
   imgBufferArray = [];
   zoneXBounds = null;
-  quesSeqStyle = null;
+  banWord = [];
+  quesSeqStyle = [];
+  questionRegex = [];
 
   console.log("🧹 Session reset");
 }
 
-// 🔥 SINGLE OCR WORKER
+app.get("/", (req, res) => {
+  res.send("Qsnap backend running");
+});
+
+//  SINGLE OCR WORKER
 let worker;
 (async () => {
   worker = await createWorker("eng");
@@ -41,6 +52,23 @@ app.post("/upload-image", upload.single("image"), (req, res) => {
 // -------------------- SET ZONE --------------------
 app.post("/confirm-zone", express.json(), async (req, res) => {
   ({ zoneXBounds, quesSeqStyle } = req.body.payload);
+  const bannedWordsArray = req.body.payload.banWord;
+
+  quesSeqStyle.forEach((quesStyle) => {
+    quesStyle = quesStyle.trim();
+
+    if (quesStyle == "") return;
+
+    quesStyle = sanitize(quesStyle);
+
+    const regex = buildStrictQuestionRegex(quesStyle);
+    questionRegex.push(regex);
+  });
+
+  bannedWordsArray.forEach((word) => {
+    word = word.trim();
+    banWord.push(sanitize(word));
+  });
 
   res.send({ status: "ok, zone confirmed" });
 });
@@ -125,7 +153,7 @@ async function getCroppedQuestions(pageBuffer, ZONE_X, PAGE_INDEX, res) {
     return;
   }
 
-  const UPSCALE = 5;
+  const UPSCALE = 2;
 
   const processedZone = await sharp(ZONE_IMAGE)
     .greyscale()
@@ -152,12 +180,15 @@ async function getCroppedQuestions(pageBuffer, ZONE_X, PAGE_INDEX, res) {
     })
     .filter((w) => w.level === 5 && w.text !== "");
 
-  const questionSeqStyle = sanitize(quesSeqStyle); // USER FORMAT
-  const questionRegex = buildStrictQuestionRegex(questionSeqStyle);
-
   const qWords = words
     .map((w) => ({ ...w, clean: sanitize(w.text) }))
-    .filter((w) => questionRegex.test(w.clean))
+    .filter((w) => {
+      //if matched with ban word return false
+      if (banWord.includes(w.clean)) return false;
+
+      //if matches with the question style regex return true else false
+      return questionRegex.some((r) => r.test(w.clean));
+    })
     .sort((a, b) => a.top - b.top);
 
   if (!qWords.length) {
@@ -214,4 +245,6 @@ async function getQuesZoneImg(pageImg, x1, x2) {
 }
 
 // -------------------- SERVER --------------------
-app.listen(3000, () => console.log("🚀 Server running on 3000"));
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => console.log(`🚀 Server running on ${PORT}`));
