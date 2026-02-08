@@ -24,8 +24,6 @@ function resetSession() {
   banWord = [];
   quesSeqStyle = [];
   questionRegex = [];
-
-  console.log("🧹 Session reset");
 }
 
 app.get("/", (req, res) => {
@@ -45,7 +43,6 @@ app.post("/upload-image", upload.single("image"), (req, res) => {
 
   imgBufferArray.push(req.file.buffer);
 
-  console.log("✅ Image received", imgBufferArray.length);
   res.send(`Image received. Total images: ${imgBufferArray.length}`);
 });
 
@@ -87,13 +84,29 @@ app.get("/stream-questions", async (req, res) => {
     return;
   }
 
-  const ZONE_X = {
-    x1: zoneXBounds.x1,
-    x2: zoneXBounds.x2,
-  };
+  const zoneLen = zoneXBounds.length;
 
   for (let i = 0; i < imgBufferArray.length; i++) {
-    await getCroppedQuestions(imgBufferArray[i], ZONE_X, i, res);
+    for (let zoneIndex = 0; zoneIndex < zoneLen; zoneIndex++) {
+      const currZone = zoneXBounds[zoneIndex];
+      const nextZone = zoneXBounds.at(zoneIndex + 1);
+
+      const fullPageBuffer = imgBufferArray[i];
+      const croppedPageBuffer = await getQuesZoneImg(
+        fullPageBuffer,
+        currZone.x1,
+        nextZone ? nextZone.x1 : 0,
+      );
+
+      await getCroppedQuestions(
+        {
+          fullPageBuffer,
+          croppedPageBuffer,
+        },
+        currZone,
+        res,
+      );
+    }
   }
 
   res.write("event: done\ndata: all done\n\n");
@@ -140,10 +153,14 @@ function sanitize(text) {
 }
 
 // -------------------- MAIN PIPELINE --------------------
-async function getCroppedQuestions(pageBuffer, ZONE_X, PAGE_INDEX, res) {
-  const ZONE_IMAGE = await getQuesZoneImg(pageBuffer, ZONE_X.x1, ZONE_X.x2);
+async function getCroppedQuestions(pageBuffer = {}, ZONE_X, res) {
+  const ZONE_IMAGE = await getQuesZoneImg(
+    pageBuffer.fullPageBuffer,
+    ZONE_X.x1,
+    ZONE_X.x2,
+  );
 
-  const pageMeta = await sharp(pageBuffer).metadata();
+  const pageMeta = await sharp(pageBuffer.croppedPageBuffer).metadata();
   const PAGE_WIDTH = pageMeta.width;
   const PAGE_HEIGHT = pageMeta.height;
 
@@ -153,7 +170,7 @@ async function getCroppedQuestions(pageBuffer, ZONE_X, PAGE_INDEX, res) {
     return;
   }
 
-  const UPSCALE = 2;
+  const UPSCALE = 3;
 
   const processedZone = await sharp(ZONE_IMAGE)
     .greyscale()
@@ -205,7 +222,7 @@ async function getCroppedQuestions(pageBuffer, ZONE_X, PAGE_INDEX, res) {
 
     if (height <= 0) continue;
 
-    const croppedImgBuffer = await sharp(pageBuffer)
+    const croppedImgBuffer = await sharp(pageBuffer.croppedPageBuffer)
       .extract({
         left: 0,
         top: Math.max(top - 5, 0),
@@ -237,7 +254,7 @@ async function getQuesZoneImg(pageImg, x1, x2) {
     .extract({
       left: Math.round(x1),
       top: 0,
-      width: Math.round(x2 - x1),
+      width: x2 !== 0 ? Math.round(x2 - x1) : Math.round(meta.width - x1),
       height,
     })
     .png()
